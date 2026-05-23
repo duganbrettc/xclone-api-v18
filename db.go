@@ -13,7 +13,7 @@ import (
 func initDB() *sql.DB {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://chirp:chirp@localhost:5432/chirp?sslmode=disable"
+		log.Fatal("DATABASE_URL environment variable is required but not set")
 	}
 
 	var db *sql.DB
