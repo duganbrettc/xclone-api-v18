@@ -81,6 +81,11 @@ func main() {
 	mux.HandleFunc("POST /api/block/{username}", requireAuth(db, handleBlockContract(db)))
 	mux.HandleFunc("DELETE /api/block/{username}", requireAuth(db, handleUnblockContract(db)))
 
+	// Settings (short-path alias for /api/users/me/settings)
+	mux.HandleFunc("GET /api/settings", requireAuth(db, handleGetSettings(db)))
+	mux.HandleFunc("PATCH /api/settings", requireAuth(db, handleUpdateSettings(db)))
+	mux.HandleFunc("POST /api/settings", requireAuth(db, handlePostSettings(db)))
+
 	// Timeline
 	mux.HandleFunc("GET /api/timeline", requireAuth(db, handleTimeline(db)))
 
