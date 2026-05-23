@@ -41,6 +41,7 @@ func main() {
 	mux.HandleFunc("POST /api/auth/signup", handleSignup(db))
 	mux.HandleFunc("POST /api/auth/login", handleLogin(db))
 	mux.HandleFunc("POST /api/auth/logout", requireAuth(db, handleLogout(db)))
+	mux.HandleFunc("GET /api/auth/me", requireAuth(db, handleGetMe(db)))
 	mux.HandleFunc("POST /api/auth/password", requireAuth(db, handleChangePassword(db)))
 	mux.HandleFunc("POST /api/auth/password-reset", handlePasswordReset())
 
@@ -80,6 +81,7 @@ func main() {
 	mux.HandleFunc("GET /api/timeline", requireAuth(db, handleTimeline(db)))
 
 	// Posts
+	mux.HandleFunc("GET /api/posts", handleListPublicPosts(db))
 	mux.HandleFunc("POST /api/posts", requireAuth(db, handleCreatePost(db)))
 	mux.HandleFunc("GET /api/posts/{id}", handleGetPost(db))
 	mux.HandleFunc("GET /api/posts/{id}/replies", handleGetReplies(db))

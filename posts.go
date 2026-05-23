@@ -138,6 +138,35 @@ func fetchPostsByAuthor(db *sql.DB, authorID, viewerID string) []Post {
 	return posts
 }
 
+func handleListPublicPosts(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		viewerID, _ := getSessionUserID(db, r)
+		rows, err := db.Query(`
+			SELECT p.id, u.username, p.body, p.visibility, p.reply_to, p.created_at,
+				(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
+				(SELECT COUNT(*) FROM posts WHERE reply_to = p.id AND deleted_at IS NULL),
+				CASE WHEN $1 != '' THEN EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $1)
+				     ELSE FALSE END
+			FROM posts p JOIN users u ON u.id = p.author_id
+			WHERE p.visibility = 'public' AND p.deleted_at IS NULL AND p.reply_to IS NULL
+			ORDER BY p.created_at DESC LIMIT 50
+		`, viewerID)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"posts": []Post{}})
+			return
+		}
+		defer rows.Close()
+		posts := []Post{}
+		for rows.Next() {
+			p, err := scanPostRow(rows)
+			if err == nil {
+				posts = append(posts, p)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"posts": posts})
+	}
+}
+
 func handleCreatePost(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		caller := currentUser(r)

@@ -96,6 +96,7 @@ func runMigrations(db *sql.DB) error {
 		// Idempotent schema migrations for pre-existing databases
 		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ NULL DEFAULT NULL`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy TEXT NOT NULL DEFAULT 'public'`,
 
 		// Indexes for timeline queries: posts by author ordered newest-first
 		`CREATE INDEX IF NOT EXISTS idx_posts_author_created ON posts(author_id, created_at DESC)`,

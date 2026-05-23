@@ -21,6 +21,7 @@ func handleUpdateMe(db *sql.DB) http.HandlerFunc {
 		var body struct {
 			DisplayName *string         `json:"displayName"`
 			Bio         *string         `json:"bio"`
+			Privacy     *string         `json:"privacy"`
 			Preferences json.RawMessage `json:"preferences"`
 		}
 		if err := readJSON(r, &body); err != nil {
@@ -32,6 +33,9 @@ func handleUpdateMe(db *sql.DB) http.HandlerFunc {
 		}
 		if body.Bio != nil {
 			db.Exec(`UPDATE users SET bio = $1 WHERE id = $2`, *body.Bio, u.ID) //nolint
+		}
+		if body.Privacy != nil && (*body.Privacy == "public" || *body.Privacy == "private") {
+			db.Exec(`UPDATE users SET privacy = $1 WHERE id = $2`, *body.Privacy, u.ID) //nolint
 		}
 		if body.Preferences != nil {
 			db.Exec(`UPDATE users SET preferences = $1 WHERE id = $2`, string(body.Preferences), u.ID) //nolint
@@ -142,6 +146,27 @@ func handleGetUserProfile(db *sql.DB) http.HandlerFunc {
 		if viewerID != "" && viewerID != profile.ID {
 			db.QueryRow(`SELECT EXISTS(SELECT 1 FROM follows WHERE follower_id=$1 AND followee_id=$2)`, viewerID, profile.ID).Scan(&iFollow) //nolint
 			db.QueryRow(`SELECT EXISTS(SELECT 1 FROM blocks WHERE blocker_id=$1 AND blocked_id=$2)`, viewerID, profile.ID).Scan(&iBlock)     //nolint
+		}
+
+		// Privacy: private profiles show limited info to non-followers
+		var profilePrivacy string
+		db.QueryRow(`SELECT COALESCE(privacy, 'public') FROM users WHERE id = $1`, profile.ID).Scan(&profilePrivacy) //nolint
+		if profilePrivacy == "private" && viewerID != profile.ID && !iFollow {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"user": map[string]any{
+					"username":    profile.Username,
+					"displayName": profile.DisplayName,
+					"bio":         "",
+					"createdAt":   profile.CreatedAt,
+					"isPrivate":   true,
+				},
+				"posts":          []Post{},
+				"followerCount":  followerCount,
+				"followingCount": followingCount,
+				"iFollow":        iFollow,
+				"iBlock":         iBlock,
+			})
+			return
 		}
 
 		posts := fetchPostsByAuthor(db, profile.ID, viewerID)

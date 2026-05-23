@@ -67,6 +67,10 @@ func handleFollow(db *sql.DB) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "Cannot follow yourself"))
 			return
 		}
+		if isBlocked(db, caller.ID, target.ID) {
+			writeJSON(w, http.StatusForbidden, errResp("forbidden", "Cannot follow: blocked"))
+			return
+		}
 		doFollow(db, caller.ID, target.ID)
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -149,6 +153,10 @@ func handleFollowByUsername(db *sql.DB) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "Cannot follow yourself"))
 			return
 		}
+		if isBlocked(db, caller.ID, target.ID) {
+			writeJSON(w, http.StatusForbidden, errResp("forbidden", "Cannot follow: blocked"))
+			return
+		}
 		doFollow(db, caller.ID, target.ID)
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -223,6 +231,10 @@ func handleFollowContract(db *sql.DB) http.HandlerFunc {
 		}
 		if target.ID == caller.ID {
 			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "Cannot follow yourself"))
+			return
+		}
+		if isBlocked(db, caller.ID, target.ID) {
+			writeJSON(w, http.StatusForbidden, errResp("forbidden", "Cannot follow: blocked"))
 			return
 		}
 		doFollow(db, caller.ID, target.ID)
