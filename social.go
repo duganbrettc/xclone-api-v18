@@ -21,18 +21,18 @@ func isBlocked(db *sql.DB, userA, userB string) bool {
 
 // doFollow is the core follow logic: caller follows target.
 func doFollow(db *sql.DB, callerID, targetID string) {
-	db.Exec(`INSERT INTO follows (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, //nolint
+	db.Exec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, //nolint
 		callerID, targetID)
 }
 
 // doUnfollow is the core unfollow logic.
 func doUnfollow(db *sql.DB, callerID, targetID string) {
-	db.Exec(`DELETE FROM follows WHERE follower_id=$1 AND following_id=$2`, callerID, targetID) //nolint
+	db.Exec(`DELETE FROM follows WHERE follower_id=$1 AND followee_id=$2`, callerID, targetID) //nolint
 }
 
 // doBlock is the core block logic: remove follows then insert block.
 func doBlock(db *sql.DB, blockerID, blockedID string) {
-	db.Exec(`DELETE FROM follows WHERE (follower_id=$1 AND following_id=$2) OR (follower_id=$2 AND following_id=$1)`, //nolint
+	db.Exec(`DELETE FROM follows WHERE (follower_id=$1 AND followee_id=$2) OR (follower_id=$2 AND followee_id=$1)`, //nolint
 		blockerID, blockedID)
 	db.Exec(`INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, //nolint
 		blockerID, blockedID)

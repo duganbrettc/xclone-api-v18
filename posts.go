@@ -12,11 +12,12 @@ import (
 func scanPostRow(rows *sql.Rows) (Post, error) {
 	var p Post
 	var replyTo sql.NullString
-	err := rows.Scan(&p.ID, &p.Author, &p.Text, &p.Visibility, &replyTo, &p.CreatedAt,
+	err := rows.Scan(&p.ID, &p.Author, &p.Body, &p.Visibility, &replyTo, &p.CreatedAt,
 		&p.LikeCount, &p.ReplyCount, &p.LikedByMe)
 	if err != nil {
 		return p, err
 	}
+	p.Text = p.Body // backward compat alias
 	if replyTo.Valid {
 		p.ReplyTo = &replyTo.String
 	}
@@ -31,21 +32,22 @@ func getPostFull(db *sql.DB, postID, viewerID string) (*Post, string, error) {
 	var authorID string
 	var likedByMe bool
 	err := db.QueryRow(`
-		SELECT p.id, u.username, p.text, p.visibility, p.reply_to, p.created_at,
+		SELECT p.id, u.username, p.body, p.visibility, p.reply_to, p.created_at,
 		       p.author_id,
 		       (SELECT COUNT(*) FROM likes WHERE post_id = p.id),
-		       (SELECT COUNT(*) FROM posts WHERE reply_to = p.id),
+		       (SELECT COUNT(*) FROM posts WHERE reply_to = p.id AND deleted_at IS NULL),
 		       CASE WHEN $2 != '' THEN EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $2)
 		            ELSE FALSE END
 		FROM posts p JOIN users u ON u.id = p.author_id
-		WHERE p.id = $1
+		WHERE p.id = $1 AND p.deleted_at IS NULL
 	`, postID, viewerID).Scan(
-		&p.ID, &p.Author, &p.Text, &p.Visibility, &replyTo, &p.CreatedAt,
+		&p.ID, &p.Author, &p.Body, &p.Visibility, &replyTo, &p.CreatedAt,
 		&authorID, &p.LikeCount, &p.ReplyCount, &likedByMe,
 	)
 	if err != nil {
 		return nil, "", err
 	}
+	p.Text = p.Body
 	p.LikedByMe = likedByMe
 	if replyTo.Valid {
 		p.ReplyTo = &replyTo.String
@@ -56,22 +58,23 @@ func getPostFull(db *sql.DB, postID, viewerID string) (*Post, string, error) {
 // getPostByID returns a single post by ID with like/reply counts.
 func getPostByID(db *sql.DB, postID, viewerID string) (*Post, error) {
 	row := db.QueryRow(`
-		SELECT p.id, u.username, p.text, p.visibility, p.reply_to, p.created_at,
+		SELECT p.id, u.username, p.body, p.visibility, p.reply_to, p.created_at,
 			(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
-			(SELECT COUNT(*) FROM posts WHERE reply_to = p.id),
+			(SELECT COUNT(*) FROM posts WHERE reply_to = p.id AND deleted_at IS NULL),
 			CASE WHEN $2 != '' THEN EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $2)
 			     ELSE FALSE END
 		FROM posts p JOIN users u ON u.id = p.author_id
-		WHERE p.id = $1
+		WHERE p.id = $1 AND p.deleted_at IS NULL
 	`, postID, viewerID)
 	var p Post
 	var replyTo sql.NullString
 	var likedByMe bool
-	err := row.Scan(&p.ID, &p.Author, &p.Text, &p.Visibility, &replyTo, &p.CreatedAt,
+	err := row.Scan(&p.ID, &p.Author, &p.Body, &p.Visibility, &replyTo, &p.CreatedAt,
 		&p.LikeCount, &p.ReplyCount, &likedByMe)
 	if err != nil {
 		return nil, err
 	}
+	p.Text = p.Body
 	p.LikedByMe = likedByMe
 	if replyTo.Valid {
 		p.ReplyTo = &replyTo.String
@@ -86,34 +89,35 @@ func fetchPostsByAuthor(db *sql.DB, authorID, viewerID string) []Post {
 
 	if viewerID == "" {
 		// Unauthenticated: public posts only
-		q = `SELECT p.id, u.username, p.text, p.visibility, p.reply_to, p.created_at,
+		q = `SELECT p.id, u.username, p.body, p.visibility, p.reply_to, p.created_at,
 			(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
-			(SELECT COUNT(*) FROM posts WHERE reply_to = p.id),
+			(SELECT COUNT(*) FROM posts WHERE reply_to = p.id AND deleted_at IS NULL),
 			FALSE
 		FROM posts p JOIN users u ON u.id = p.author_id
-		WHERE p.author_id = $1 AND p.visibility = 'public'
+		WHERE p.author_id = $1 AND p.visibility = 'public' AND p.deleted_at IS NULL
 		ORDER BY p.created_at DESC LIMIT 50`
 		args = []any{authorID}
 	} else if viewerID == authorID {
-		// Own profile: see all posts
-		q = `SELECT p.id, u.username, p.text, p.visibility, p.reply_to, p.created_at,
+		// Own profile: see all non-deleted posts
+		q = `SELECT p.id, u.username, p.body, p.visibility, p.reply_to, p.created_at,
 			(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
-			(SELECT COUNT(*) FROM posts WHERE reply_to = p.id),
+			(SELECT COUNT(*) FROM posts WHERE reply_to = p.id AND deleted_at IS NULL),
 			EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $2)
 		FROM posts p JOIN users u ON u.id = p.author_id
-		WHERE p.author_id = $1
+		WHERE p.author_id = $1 AND p.deleted_at IS NULL
 		ORDER BY p.created_at DESC LIMIT 50`
 		args = []any{authorID, viewerID}
 	} else {
-		// Authenticated viewer: public OR if viewer follows the author
-		q = `SELECT p.id, u.username, p.text, p.visibility, p.reply_to, p.created_at,
+		// Authenticated viewer: public posts only (private posts only visible to author+followers)
+		q = `SELECT p.id, u.username, p.body, p.visibility, p.reply_to, p.created_at,
 			(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
-			(SELECT COUNT(*) FROM posts WHERE reply_to = p.id),
+			(SELECT COUNT(*) FROM posts WHERE reply_to = p.id AND deleted_at IS NULL),
 			EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $2)
 		FROM posts p JOIN users u ON u.id = p.author_id
 		WHERE p.author_id = $1
+		  AND p.deleted_at IS NULL
 		  AND (p.visibility = 'public' OR $2 = p.author_id
-		       OR EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND following_id = p.author_id))
+		       OR EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = p.author_id))
 		ORDER BY p.created_at DESC LIMIT 50`
 		args = []any{authorID, viewerID}
 	}
@@ -137,27 +141,32 @@ func fetchPostsByAuthor(db *sql.DB, authorID, viewerID string) []Post {
 func handleCreatePost(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		caller := currentUser(r)
-		var body struct {
+		var req struct {
 			Text       string  `json:"text"`
+			Body       string  `json:"body"` // v18 spec field name
 			Visibility string  `json:"visibility"`
 			ReplyTo    *string `json:"replyTo"`
 		}
-		if err := readJSON(r, &body); err != nil {
+		if err := readJSON(r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "Invalid JSON"))
 			return
 		}
-		if body.Text == "" {
-			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "text required"))
+		text := req.Body
+		if text == "" {
+			text = req.Text
+		}
+		if text == "" {
+			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "body required"))
 			return
 		}
-		if utf8.RuneCountInString(body.Text) > 280 {
-			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "text exceeds 280 characters"))
+		if utf8.RuneCountInString(text) > 280 {
+			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "body exceeds 280 characters"))
 			return
 		}
-		if body.Visibility == "" {
-			body.Visibility = "public"
+		if req.Visibility == "" {
+			req.Visibility = "public"
 		}
-		if body.Visibility != "public" && body.Visibility != "private" {
+		if req.Visibility != "public" && req.Visibility != "private" {
 			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "visibility must be public or private"))
 			return
 		}
@@ -169,13 +178,13 @@ func handleCreatePost(db *sql.DB) http.HandlerFunc {
 		}
 
 		var replyTo sql.NullString
-		if body.ReplyTo != nil && *body.ReplyTo != "" {
-			replyTo = sql.NullString{String: *body.ReplyTo, Valid: true}
+		if req.ReplyTo != nil && *req.ReplyTo != "" {
+			replyTo = sql.NullString{String: *req.ReplyTo, Valid: true}
 		}
 
 		_, err = db.Exec(
-			`INSERT INTO posts (id, author_id, text, visibility, reply_to) VALUES ($1, $2, $3, $4, $5)`,
-			id, caller.ID, body.Text, body.Visibility, replyTo,
+			`INSERT INTO posts (id, author_id, body, visibility, reply_to) VALUES ($1, $2, $3, $4, $5)`,
+			id, caller.ID, text, req.Visibility, replyTo,
 		)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, errResp("internal", "Could not create post"))
@@ -223,7 +232,7 @@ func handleGetPost(db *sql.DB) http.HandlerFunc {
 			if viewerID != authorID {
 				var follows bool
 				db.QueryRow(
-					`SELECT EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND following_id = $2)`,
+					`SELECT EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND followee_id = $2)`,
 					viewerID, authorID,
 				).Scan(&follows) //nolint
 				if !follows {
@@ -233,17 +242,18 @@ func handleGetPost(db *sql.DB) http.HandlerFunc {
 			}
 		}
 
-		// Fetch replies (visibility-filtered for viewer)
+		// Fetch replies (visibility-filtered for viewer, non-deleted only)
 		replyRows, err := db.Query(`
-			SELECT p.id, u.username, p.text, p.visibility, p.reply_to, p.created_at,
+			SELECT p.id, u.username, p.body, p.visibility, p.reply_to, p.created_at,
 				(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
-				(SELECT COUNT(*) FROM posts WHERE reply_to = p.id),
+				(SELECT COUNT(*) FROM posts WHERE reply_to = p.id AND deleted_at IS NULL),
 				CASE WHEN $2 != '' THEN EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $2)
 				     ELSE FALSE END
 			FROM posts p JOIN users u ON u.id = p.author_id
 			WHERE p.reply_to = $1
+			  AND p.deleted_at IS NULL
 			  AND (p.visibility = 'public' OR p.author_id = $2
-			       OR ($2 != '' AND EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND following_id = p.author_id)))
+			       OR ($2 != '' AND EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = p.author_id)))
 			ORDER BY p.created_at ASC
 		`, postID, viewerID)
 		replies := []Post{}
@@ -264,13 +274,49 @@ func handleGetPost(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// handleGetReplies handles GET /api/posts/{id}/replies.
+func handleGetReplies(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		postID := r.PathValue("id")
+		viewerID, _ := getSessionUserID(db, r)
+
+		rows, err := db.Query(`
+			SELECT p.id, u.username, p.body, p.visibility, p.reply_to, p.created_at,
+				(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
+				(SELECT COUNT(*) FROM posts WHERE reply_to = p.id AND deleted_at IS NULL),
+				CASE WHEN $2 != '' THEN EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $2)
+				     ELSE FALSE END
+			FROM posts p JOIN users u ON u.id = p.author_id
+			WHERE p.reply_to = $1
+			  AND p.deleted_at IS NULL
+			  AND (p.visibility = 'public' OR p.author_id = $2
+			       OR ($2 != '' AND EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = p.author_id)))
+			ORDER BY p.created_at ASC
+		`, postID, viewerID)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"replies": []Post{}})
+			return
+		}
+		defer rows.Close()
+
+		replies := []Post{}
+		for rows.Next() {
+			p, err := scanPostRow(rows)
+			if err == nil {
+				replies = append(replies, p)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"replies": replies})
+	}
+}
+
 func handleLikePost(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		caller := currentUser(r)
 		postID := r.PathValue("id")
 
 		var exists bool
-		db.QueryRow(`SELECT EXISTS(SELECT 1 FROM posts WHERE id = $1)`, postID).Scan(&exists) //nolint
+		db.QueryRow(`SELECT EXISTS(SELECT 1 FROM posts WHERE id = $1 AND deleted_at IS NULL)`, postID).Scan(&exists) //nolint
 		if !exists {
 			writeJSON(w, http.StatusNotFound, errResp("not_found", "Post not found"))
 			return
@@ -295,25 +341,30 @@ func handleCreateReply(db *sql.DB) http.HandlerFunc {
 		parentID := r.PathValue("id")
 
 		var parentExists bool
-		db.QueryRow(`SELECT EXISTS(SELECT 1 FROM posts WHERE id = $1)`, parentID).Scan(&parentExists) //nolint
+		db.QueryRow(`SELECT EXISTS(SELECT 1 FROM posts WHERE id = $1 AND deleted_at IS NULL)`, parentID).Scan(&parentExists) //nolint
 		if !parentExists {
 			writeJSON(w, http.StatusNotFound, errResp("not_found", "Post not found"))
 			return
 		}
 
-		var body struct {
+		var req struct {
 			Text string `json:"text"`
+			Body string `json:"body"` // v18 spec field name
 		}
-		if err := readJSON(r, &body); err != nil {
+		if err := readJSON(r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "Invalid JSON"))
 			return
 		}
-		if body.Text == "" {
-			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "text required"))
+		text := req.Body
+		if text == "" {
+			text = req.Text
+		}
+		if text == "" {
+			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "body required"))
 			return
 		}
-		if utf8.RuneCountInString(body.Text) > 280 {
-			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "text exceeds 280 characters"))
+		if utf8.RuneCountInString(text) > 280 {
+			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "body exceeds 280 characters"))
 			return
 		}
 
@@ -324,8 +375,8 @@ func handleCreateReply(db *sql.DB) http.HandlerFunc {
 		}
 
 		_, err = db.Exec(
-			`INSERT INTO posts (id, author_id, text, visibility, reply_to) VALUES ($1, $2, $3, 'public', $4)`,
-			id, caller.ID, body.Text, parentID,
+			`INSERT INTO posts (id, author_id, body, visibility, reply_to) VALUES ($1, $2, $3, 'public', $4)`,
+			id, caller.ID, text, parentID,
 		)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, errResp("internal", "Could not create reply"))
@@ -347,7 +398,7 @@ func handleDeletePost(db *sql.DB) http.HandlerFunc {
 		postID := r.PathValue("id")
 
 		var authorID string
-		err := db.QueryRow(`SELECT author_id FROM posts WHERE id = $1`, postID).Scan(&authorID)
+		err := db.QueryRow(`SELECT author_id FROM posts WHERE id = $1 AND deleted_at IS NULL`, postID).Scan(&authorID)
 		if err == sql.ErrNoRows {
 			writeJSON(w, http.StatusNotFound, errResp("not_found", "Post not found"))
 			return
@@ -361,10 +412,9 @@ func handleDeletePost(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Delete likes and replies cascade (or just the post; FK cascade handles rest)
-		db.Exec(`DELETE FROM likes WHERE post_id = $1`, postID)             //nolint
-		db.Exec(`DELETE FROM posts WHERE reply_to = $1`, postID)            //nolint
-		db.Exec(`DELETE FROM posts WHERE id = $1`, postID)                  //nolint
+		// Soft-delete: set deleted_at timestamp so the post disappears from all timelines
+		// but can still be referenced by ID (returns 404 due to deleted_at IS NULL filters).
+		db.Exec(`UPDATE posts SET deleted_at = NOW() WHERE id = $1`, postID) //nolint
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -396,37 +446,39 @@ func handleTimeline(db *sql.DB) http.HandlerFunc {
 		var err error
 		if beforeTime == nil {
 			rows, err = db.Query(`
-				SELECT p.id, u.username, p.text, p.visibility, p.reply_to, p.created_at,
+				SELECT p.id, u.username, p.body, p.visibility, p.reply_to, p.created_at,
 					(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
-					(SELECT COUNT(*) FROM posts WHERE reply_to = p.id),
+					(SELECT COUNT(*) FROM posts WHERE reply_to = p.id AND deleted_at IS NULL),
 					EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $1)
 				FROM posts p
 				JOIN users u ON u.id = p.author_id
 				WHERE (p.author_id = $1
-				       OR p.author_id IN (SELECT following_id FROM follows WHERE follower_id = $1))
+				       OR p.author_id IN (SELECT followee_id FROM follows WHERE follower_id = $1))
+				  AND p.deleted_at IS NULL
 				  AND p.author_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = $1)
 				  AND p.author_id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = $1)
 				  AND (p.visibility = 'public'
 				       OR p.author_id = $1
-				       OR EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND following_id = p.author_id))
+				       OR EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND followee_id = p.author_id))
 				ORDER BY p.created_at DESC
 				LIMIT $2
 			`, caller.ID, limit)
 		} else {
 			rows, err = db.Query(`
-				SELECT p.id, u.username, p.text, p.visibility, p.reply_to, p.created_at,
+				SELECT p.id, u.username, p.body, p.visibility, p.reply_to, p.created_at,
 					(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
-					(SELECT COUNT(*) FROM posts WHERE reply_to = p.id),
+					(SELECT COUNT(*) FROM posts WHERE reply_to = p.id AND deleted_at IS NULL),
 					EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $1)
 				FROM posts p
 				JOIN users u ON u.id = p.author_id
 				WHERE (p.author_id = $1
-				       OR p.author_id IN (SELECT following_id FROM follows WHERE follower_id = $1))
+				       OR p.author_id IN (SELECT followee_id FROM follows WHERE follower_id = $1))
+				  AND p.deleted_at IS NULL
 				  AND p.author_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = $1)
 				  AND p.author_id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = $1)
 				  AND (p.visibility = 'public'
 				       OR p.author_id = $1
-				       OR EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND following_id = p.author_id))
+				       OR EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND followee_id = p.author_id))
 				  AND p.created_at < $3
 				ORDER BY p.created_at DESC
 				LIMIT $2

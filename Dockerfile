@@ -7,7 +7,10 @@ RUN go build -o server .
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates wget
+RUN adduser -D -u 1001 chirp
 WORKDIR /app
 COPY --from=builder /app/server ./server
-EXPOSE 9321
+RUN chown chirp:chirp /app/server
+USER chirp
+EXPOSE 8080
 CMD ["./server"]

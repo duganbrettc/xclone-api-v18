@@ -5,28 +5,26 @@ import (
 	"net/http"
 )
 
-// handleListConversations handles GET /api/dms and GET /api/messages.
-// Returns one entry per distinct peer, with the most recent DM per peer.
+// handleListConversations handles GET /api/messages/threads, GET /api/dms and GET /api/messages.
+// Returns one entry per distinct peer, with the most recent message per peer.
 func handleListConversations(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		caller := currentUser(r)
 
-		// Use DISTINCT ON to get the most recent DM per peer in a single query.
-		// The subquery computes peer_id once so we can reference it in ORDER BY.
 		rows, err := db.QueryContext(r.Context(), `
 			SELECT DISTINCT ON (peer_id)
 				peer_u.username,
-				dm.id, from_u.username, to_u.username, dm.text, dm.created_at
+				m.id, from_u.username, to_u.username, m.body, m.created_at
 			FROM (
-				SELECT id, from_id, to_id, text, created_at,
-					CASE WHEN from_id = $1 THEN to_id ELSE from_id END AS peer_id
-				FROM dms
-				WHERE from_id = $1 OR to_id = $1
-			) dm
-			JOIN users peer_u ON peer_u.id = dm.peer_id
-			JOIN users from_u ON from_u.id = dm.from_id
-			JOIN users to_u   ON to_u.id   = dm.to_id
-			ORDER BY peer_id, dm.created_at DESC
+				SELECT id, sender_id, recipient_id, body, created_at,
+					CASE WHEN sender_id = $1 THEN recipient_id ELSE sender_id END AS peer_id
+				FROM messages
+				WHERE sender_id = $1 OR recipient_id = $1
+			) m
+			JOIN users peer_u ON peer_u.id = m.peer_id
+			JOIN users from_u ON from_u.id = m.sender_id
+			JOIN users to_u   ON to_u.id   = m.recipient_id
+			ORDER BY peer_id, m.created_at DESC
 		`, caller.ID)
 		if err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"conversations": []any{}})
@@ -43,18 +41,19 @@ func handleListConversations(db *sql.DB) http.HandlerFunc {
 		for rows.Next() {
 			var peer string
 			var dm DM
-			if err := rows.Scan(&peer, &dm.ID, &dm.From, &dm.To, &dm.Text, &dm.CreatedAt); err != nil {
+			if err := rows.Scan(&peer, &dm.ID, &dm.From, &dm.To, &dm.Body, &dm.CreatedAt); err != nil {
 				continue
 			}
+			dm.Text = dm.Body
 			convs = append(convs, Conv{Peer: peer, LastMessage: dm})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"conversations": convs})
 	}
 }
 
-// handleGetConversation handles GET /api/dms/{username} and GET /api/messages/{username}.
-// Returns all DMs between caller and {username} in ascending createdAt order.
-// Returns 404 if {username} does not exist.
+// handleGetConversation handles GET /api/messages/threads/{username}, GET /api/dms/{username}
+// and GET /api/messages/{username}.
+// Returns all messages between caller and {username} in ascending createdAt order.
 func handleGetConversation(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		caller := currentUser(r)
@@ -62,8 +61,6 @@ func handleGetConversation(db *sql.DB) http.HandlerFunc {
 
 		target, err := getUserByUsername(db, username)
 		if err == sql.ErrNoRows {
-			// Nonexistent peer: return empty conversation rather than 404,
-			// matching the acceptance test expectation (no error for unknown peer).
 			writeJSON(w, http.StatusOK, map[string]any{"messages": []DM{}})
 			return
 		}
@@ -72,15 +69,14 @@ func handleGetConversation(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Strictly two-user scoping: only messages between caller and target.
 		rows, err := db.QueryContext(r.Context(), `
-			SELECT dm.id, from_u.username, to_u.username, dm.text, dm.created_at
-			FROM dms dm
-			JOIN users from_u ON from_u.id = dm.from_id
-			JOIN users to_u   ON to_u.id   = dm.to_id
-			WHERE (dm.from_id = $1 AND dm.to_id = $2)
-			   OR (dm.from_id = $2 AND dm.to_id = $1)
-			ORDER BY dm.created_at ASC
+			SELECT m.id, from_u.username, to_u.username, m.body, m.created_at
+			FROM messages m
+			JOIN users from_u ON from_u.id = m.sender_id
+			JOIN users to_u   ON to_u.id   = m.recipient_id
+			WHERE (m.sender_id = $1 AND m.recipient_id = $2)
+			   OR (m.sender_id = $2 AND m.recipient_id = $1)
+			ORDER BY m.created_at ASC
 		`, caller.ID, target.ID)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, errResp("internal", "Could not fetch messages"))
@@ -91,7 +87,8 @@ func handleGetConversation(db *sql.DB) http.HandlerFunc {
 		messages := []DM{}
 		for rows.Next() {
 			var dm DM
-			if err := rows.Scan(&dm.ID, &dm.From, &dm.To, &dm.Text, &dm.CreatedAt); err == nil {
+			if err := rows.Scan(&dm.ID, &dm.From, &dm.To, &dm.Body, &dm.CreatedAt); err == nil {
+				dm.Text = dm.Body
 				messages = append(messages, dm)
 			}
 		}
@@ -99,52 +96,62 @@ func handleGetConversation(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-// handleSendDM handles POST /api/messages (cascade-style: body {to_username, text}).
+// handleSendDM handles POST /api/messages (cascade-style: body {to_username, text/body}).
 func handleSendDM(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		caller := currentUser(r)
 		var body struct {
 			ToUsername string `json:"to_username"`
 			Text       string `json:"text"`
+			Body       string `json:"body"`
 		}
 		if err := readJSON(r, &body); err != nil {
 			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "Invalid JSON"))
 			return
 		}
-		if body.ToUsername == "" || body.Text == "" {
-			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "to_username and text required"))
+		text := body.Body
+		if text == "" {
+			text = body.Text
+		}
+		if body.ToUsername == "" || text == "" {
+			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "to_username and body required"))
 			return
 		}
-		sendDM(db, w, r, caller, body.ToUsername, body.Text)
+		sendDM(db, w, r, caller, body.ToUsername, text)
 	}
 }
 
-// handleSendDMToUsername handles POST /api/dms/{username} (OpenAPI-style: body {text}).
+// handleSendDMToUsername handles POST /api/messages/threads/{username},
+// POST /api/dms/{username}, POST /api/dm/{username} (body {text} or {body}).
 func handleSendDMToUsername(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		caller := currentUser(r)
 		username := r.PathValue("username")
 		var body struct {
 			Text string `json:"text"`
+			Body string `json:"body"` // v18 spec field name
 		}
 		if err := readJSON(r, &body); err != nil {
 			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "Invalid JSON"))
 			return
 		}
-		if body.Text == "" {
-			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "text required"))
+		text := body.Body
+		if text == "" {
+			text = body.Text
+		}
+		if text == "" {
+			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "body required"))
 			return
 		}
-		if len(body.Text) > 1000 {
-			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "text exceeds 1000 characters"))
+		if len(text) > 1000 {
+			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "body exceeds 1000 characters"))
 			return
 		}
-		sendDM(db, w, r, caller, username, body.Text)
+		sendDM(db, w, r, caller, username, text)
 	}
 }
 
 // sendDM is the shared DM-send logic used by both route styles.
-// Returns 404 if target user not found, 403 if blocked, 201 with DM on success.
 func sendDM(db *sql.DB, w http.ResponseWriter, r *http.Request, caller *DBUser, toUsername, text string) {
 	target, err := getUserByUsername(db, toUsername)
 	if err == sql.ErrNoRows {
@@ -161,7 +168,6 @@ func sendDM(db *sql.DB, w http.ResponseWriter, r *http.Request, caller *DBUser, 
 	}
 
 	// 403 if the target has blocked the caller (or caller has blocked target).
-	// Per contract: "B cannot DM A if A blocked B" — check if target blocked caller.
 	var blocked bool
 	db.QueryRowContext(r.Context(), `
 		SELECT EXISTS(
@@ -182,19 +188,19 @@ func sendDM(db *sql.DB, w http.ResponseWriter, r *http.Request, caller *DBUser, 
 	}
 
 	var dm DM
-	var ignoredFromID, ignoredToID string
+	var ignoredSenderID, ignoredRecipientID string
 	err = db.QueryRowContext(r.Context(), `
-		INSERT INTO dms (id, from_id, to_id, text)
+		INSERT INTO messages (id, sender_id, recipient_id, body)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, from_id, to_id, text, created_at
-	`, id, caller.ID, target.ID, text).Scan(&dm.ID, &ignoredFromID, &ignoredToID, &dm.Text, &dm.CreatedAt)
+		RETURNING id, sender_id, recipient_id, body, created_at
+	`, id, caller.ID, target.ID, text).Scan(&dm.ID, &ignoredSenderID, &ignoredRecipientID, &dm.Body, &dm.CreatedAt)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("internal", "Could not send message"))
 		return
 	}
 
-	// RETURNING gives raw UUIDs; replace with usernames for the response.
 	dm.From = caller.Username
 	dm.To = target.Username
+	dm.Text = dm.Body
 	writeJSON(w, http.StatusCreated, dm)
 }

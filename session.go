@@ -47,7 +47,8 @@ type User struct {
 type Post struct {
 	ID         string    `json:"id"`
 	Author     string    `json:"author"`
-	Text       string    `json:"text"`
+	Body       string    `json:"body"`
+	Text       string    `json:"text"` // alias for Body; kept for backward compat
 	Visibility string    `json:"visibility"`
 	CreatedAt  time.Time `json:"createdAt"`
 	LikeCount  int       `json:"likeCount"`
@@ -62,7 +63,8 @@ type DM struct {
 	ID        string    `json:"id"`
 	From      string    `json:"from"`
 	To        string    `json:"to"`
-	Text      string    `json:"text"`
+	Body      string    `json:"body"`
+	Text      string    `json:"text"` // alias for Body; kept for backward compat
 	CreatedAt time.Time `json:"createdAt"`
 }
 

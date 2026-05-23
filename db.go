@@ -13,7 +13,7 @@ import (
 func initDB() *sql.DB {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://xclone:xclone@localhost:5432/xclone?sslmode=disable"
+		dsn = "postgres://chirp:chirp@localhost:5432/chirp?sslmode=disable"
 	}
 
 	var db *sql.DB
@@ -47,6 +47,7 @@ func runMigrations(db *sql.DB) error {
 			username      TEXT UNIQUE NOT NULL CHECK(username ~ '^[a-zA-Z0-9_]+$'),
 			display_name  TEXT NOT NULL DEFAULT '',
 			bio           TEXT NOT NULL DEFAULT '',
+			email         TEXT NOT NULL DEFAULT '',
 			password_hash TEXT NOT NULL,
 			preferences   TEXT NOT NULL DEFAULT '{}',
 			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -59,9 +60,9 @@ func runMigrations(db *sql.DB) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS follows (
 			follower_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			following_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			followee_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (follower_id, following_id)
+			PRIMARY KEY (follower_id, followee_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS blocks (
 			blocker_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -72,10 +73,11 @@ func runMigrations(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS posts (
 			id         TEXT PRIMARY KEY,
 			author_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			text       TEXT NOT NULL,
+			body       TEXT NOT NULL,
 			visibility TEXT NOT NULL DEFAULT 'public' CHECK(visibility IN ('public','private')),
 			reply_to   TEXT REFERENCES posts(id) ON DELETE SET NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at TIMESTAMPTZ NULL DEFAULT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS likes (
 			user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -83,13 +85,17 @@ func runMigrations(db *sql.DB) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (user_id, post_id)
 		)`,
-		`CREATE TABLE IF NOT EXISTS dms (
-			id         TEXT PRIMARY KEY,
-			from_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			to_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			text       TEXT NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		`CREATE TABLE IF NOT EXISTS messages (
+			id           TEXT PRIMARY KEY,
+			sender_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			body         TEXT NOT NULL,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+
+		// Idempotent schema migrations for pre-existing databases
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ NULL DEFAULT NULL`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT ''`,
 
 		// Indexes for timeline queries: posts by author ordered newest-first
 		`CREATE INDEX IF NOT EXISTS idx_posts_author_created ON posts(author_id, created_at DESC)`,
@@ -97,18 +103,17 @@ func runMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC)`,
 		// Index for reply threading
 		`CREATE INDEX IF NOT EXISTS idx_posts_reply_to ON posts(reply_to)`,
-		// Index for efficient public-post queries (v17)
-		`CREATE INDEX IF NOT EXISTS idx_posts_visibility ON posts(visibility, created_at DESC)`,
+		// Partial index for non-deleted posts
+		`CREATE INDEX IF NOT EXISTS idx_posts_not_deleted ON posts(created_at DESC) WHERE deleted_at IS NULL`,
 
-		// Index for DM thread queries: all messages between exactly two users, time-ordered.
-		// LEAST/GREATEST normalises the direction so both (A→B) and (B→A) rows land in the same bucket.
-		`CREATE INDEX IF NOT EXISTS idx_dms_thread ON dms(LEAST(from_id, to_id), GREATEST(from_id, to_id), created_at ASC)`,
+		// Index for message thread queries: all messages between exactly two users, time-ordered.
+		`CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(LEAST(sender_id, recipient_id), GREATEST(sender_id, recipient_id), created_at ASC)`,
 		// Index for conversation list (most-recent-per-peer): single-user scan
-		`CREATE INDEX IF NOT EXISTS idx_dms_participants ON dms(from_id, to_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_participants ON messages(sender_id, recipient_id, created_at DESC)`,
 
 		// Indexes for follows/blocks lookups
-		`CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id, following_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id, follower_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id, followee_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_follows_followee ON follows(followee_id, follower_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON blocks(blocker_id, blocked_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks(blocked_id, blocker_id)`,
 

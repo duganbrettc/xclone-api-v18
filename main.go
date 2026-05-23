@@ -12,7 +12,7 @@ func main() {
 		port = os.Getenv("API_PORT")
 	}
 	if port == "" {
-		port = "9321"
+		port = "8080"
 	}
 
 	mux := http.NewServeMux()
@@ -82,17 +82,26 @@ func main() {
 	// Posts
 	mux.HandleFunc("POST /api/posts", requireAuth(db, handleCreatePost(db)))
 	mux.HandleFunc("GET /api/posts/{id}", handleGetPost(db))
+	mux.HandleFunc("GET /api/posts/{id}/replies", handleGetReplies(db))
 	mux.HandleFunc("POST /api/posts/{id}/like", requireAuth(db, handleLikePost(db)))
 	mux.HandleFunc("DELETE /api/posts/{id}/like", requireAuth(db, handleUnlikePost(db)))
+	mux.HandleFunc("POST /api/posts/{id}/likes", requireAuth(db, handleLikePost(db)))
+	mux.HandleFunc("DELETE /api/posts/{id}/likes", requireAuth(db, handleUnlikePost(db)))
 	mux.HandleFunc("DELETE /api/posts/{id}", requireAuth(db, handleDeletePost(db)))
 	mux.HandleFunc("POST /api/posts/{id}/replies", requireAuth(db, handleCreateReply(db)))
 	// Contract-spec singular reply path
 	mux.HandleFunc("POST /api/posts/{id}/reply", requireAuth(db, handleCreateReply(db)))
 
+	// Direct messages — /api/messages/threads (contract-spec)
+	mux.HandleFunc("GET /api/messages/threads", requireAuth(db, handleListConversations(db)))
+	mux.HandleFunc("GET /api/messages/threads/{username}", requireAuth(db, handleGetConversation(db)))
+	mux.HandleFunc("POST /api/messages/threads/{username}", requireAuth(db, handleSendDMToUsername(db)))
+
 	// Direct messages – cascade-style /api/messages routes
 	mux.HandleFunc("GET /api/messages", requireAuth(db, handleListConversations(db)))
 	mux.HandleFunc("POST /api/messages", requireAuth(db, handleSendDM(db)))
 	mux.HandleFunc("GET /api/messages/{username}", requireAuth(db, handleGetConversation(db)))
+	mux.HandleFunc("POST /api/messages/{username}", requireAuth(db, handleSendDMToUsername(db)))
 
 	// Direct messages – OpenAPI-style /api/dms routes (same logic)
 	mux.HandleFunc("GET /api/dms", requireAuth(db, handleListConversations(db)))

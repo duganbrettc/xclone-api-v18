@@ -135,12 +135,12 @@ func handleGetUserProfile(db *sql.DB) http.HandlerFunc {
 
 		// Follower/following counts
 		var followerCount, followingCount int
-		db.QueryRow(`SELECT COUNT(*) FROM follows WHERE following_id = $1`, profile.ID).Scan(&followerCount)  //nolint
+		db.QueryRow(`SELECT COUNT(*) FROM follows WHERE followee_id = $1`, profile.ID).Scan(&followerCount)   //nolint
 		db.QueryRow(`SELECT COUNT(*) FROM follows WHERE follower_id = $1`, profile.ID).Scan(&followingCount) //nolint
 
 		var iFollow, iBlock bool
 		if viewerID != "" && viewerID != profile.ID {
-			db.QueryRow(`SELECT EXISTS(SELECT 1 FROM follows WHERE follower_id=$1 AND following_id=$2)`, viewerID, profile.ID).Scan(&iFollow) //nolint
+			db.QueryRow(`SELECT EXISTS(SELECT 1 FROM follows WHERE follower_id=$1 AND followee_id=$2)`, viewerID, profile.ID).Scan(&iFollow) //nolint
 			db.QueryRow(`SELECT EXISTS(SELECT 1 FROM blocks WHERE blocker_id=$1 AND blocked_id=$2)`, viewerID, profile.ID).Scan(&iBlock)     //nolint
 		}
 
@@ -199,7 +199,7 @@ func handleGetFollowers(db *sql.DB) http.HandlerFunc {
 			SELECT u.username, u.display_name, u.bio, u.created_at
 			FROM follows f
 			JOIN users u ON u.id = f.follower_id
-			WHERE f.following_id = $1
+			WHERE f.followee_id = $1
 			ORDER BY f.created_at DESC
 		`, profile.ID)
 		if err != nil {
@@ -232,7 +232,7 @@ func handleGetFollowing(db *sql.DB) http.HandlerFunc {
 		rows, err := db.Query(`
 			SELECT u.username, u.display_name, u.bio, u.created_at
 			FROM follows f
-			JOIN users u ON u.id = f.following_id
+			JOIN users u ON u.id = f.followee_id
 			WHERE f.follower_id = $1
 			ORDER BY f.created_at DESC
 		`, profile.ID)
