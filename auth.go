@@ -65,8 +65,11 @@ func handleSignup(db *sql.DB) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"user": map[string]any{
-				"id":       u.ID,
-				"username": u.Username,
+				"id":          u.ID,
+				"username":    u.Username,
+				"displayName": u.DisplayName,
+				"bio":         u.Bio,
+				"createdAt":   u.CreatedAt,
 			},
 		})
 	}
@@ -103,8 +106,11 @@ func handleLogin(db *sql.DB) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"user": map[string]any{
-				"id":       u.ID,
-				"username": u.Username,
+				"id":          u.ID,
+				"username":    u.Username,
+				"displayName": u.DisplayName,
+				"bio":         u.Bio,
+				"createdAt":   u.CreatedAt,
 			},
 		})
 	}
