@@ -24,9 +24,10 @@ type DBUser struct {
 	CreatedAt   time.Time
 }
 
-// toUser converts a DBUser to the public API User response shape.
+// toUser converts a DBUser to the public API User response shape (snake_case, per contract).
 func (u *DBUser) toUser() User {
 	return User{
+		ID:          u.ID,
 		Username:    u.Username,
 		DisplayName: u.DisplayName,
 		Bio:         u.Bio,
@@ -34,12 +35,13 @@ func (u *DBUser) toUser() User {
 	}
 }
 
-// User is the public API response shape.
+// User is the public API response shape (snake_case field names match xclone-http-api contract).
 type User struct {
+	ID          string    `json:"id"`
 	Username    string    `json:"username"`
-	DisplayName string    `json:"displayName"`
+	DisplayName string    `json:"display_name"`
 	Bio         string    `json:"bio,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // Post is the public API response shape.

@@ -11,7 +11,15 @@ import (
 func handleGetMe(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
-		writeJSON(w, http.StatusOK, u.toUser())
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user": map[string]any{
+				"id":           u.ID,
+				"username":     u.Username,
+				"display_name": u.DisplayName,
+				"bio":          u.Bio,
+				"created_at":   u.CreatedAt,
+			},
+		})
 	}
 }
 
@@ -19,17 +27,23 @@ func handleUpdateMe(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
 		var body struct {
-			DisplayName *string         `json:"displayName"`
-			Bio         *string         `json:"bio"`
-			Privacy     *string         `json:"privacy"`
-			Preferences json.RawMessage `json:"preferences"`
+			DisplayName  *string         `json:"displayName"`
+			DisplayName2 *string         `json:"display_name"`
+			Bio          *string         `json:"bio"`
+			Privacy      *string         `json:"privacy"`
+			Preferences  json.RawMessage `json:"preferences"`
 		}
 		if err := readJSON(r, &body); err != nil {
 			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "Invalid JSON"))
 			return
 		}
-		if body.DisplayName != nil {
-			db.Exec(`UPDATE users SET display_name = $1 WHERE id = $2`, *body.DisplayName, u.ID) //nolint
+		// Accept both camelCase (displayName) and snake_case (display_name) per contract
+		displayName := body.DisplayName
+		if displayName == nil {
+			displayName = body.DisplayName2
+		}
+		if displayName != nil {
+			db.Exec(`UPDATE users SET display_name = $1 WHERE id = $2`, *displayName, u.ID) //nolint
 		}
 		if body.Bio != nil {
 			db.Exec(`UPDATE users SET bio = $1 WHERE id = $2`, *body.Bio, u.ID) //nolint
@@ -45,7 +59,15 @@ func handleUpdateMe(db *sql.DB) http.HandlerFunc {
 			writeJSON(w, http.StatusInternalServerError, errResp("internal", "Could not fetch user"))
 			return
 		}
-		writeJSON(w, http.StatusOK, updated.toUser())
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user": map[string]any{
+				"id":           updated.ID,
+				"username":     updated.Username,
+				"display_name": updated.DisplayName,
+				"bio":          updated.Bio,
+				"created_at":   updated.CreatedAt,
+			},
+		})
 	}
 }
 
@@ -56,33 +78,69 @@ func handleGetSettings(db *sql.DB) http.HandlerFunc {
 		if err := db.QueryRow(`SELECT preferences FROM users WHERE id = $1`, u.ID).Scan(&prefsJSON); err != nil {
 			prefsJSON = "{}"
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(prefsJSON)) //nolint
+		// Contract: {"settings": {"default_post_visibility": "public|private", "email": "string?"}}
+		var prefs map[string]any
+		if err := json.Unmarshal([]byte(prefsJSON), &prefs); err != nil {
+			prefs = map[string]any{}
+		}
+		visibility, _ := prefs["default_post_visibility"].(string)
+		if visibility == "" {
+			visibility = "public"
+		}
+		email, _ := prefs["email"].(string)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"settings": map[string]any{
+				"default_post_visibility": visibility,
+				"email":                   email,
+			},
+		})
 	}
 }
 
 func handleUpdateSettings(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
-		var rawBody json.RawMessage
-		if err := readJSON(r, &rawBody); err != nil {
+		var body struct {
+			DefaultPostVisibility *string `json:"default_post_visibility"`
+			Email                 *string `json:"email"`
+		}
+		if err := readJSON(r, &body); err != nil {
 			writeJSON(w, http.StatusBadRequest, errResp("bad_request", "Invalid JSON"))
 			return
 		}
-		db.Exec(`UPDATE users SET preferences = $1 WHERE id = $2`, string(rawBody), u.ID) //nolint
+		// Load existing prefs
 		var prefsJSON string
 		if err := db.QueryRow(`SELECT preferences FROM users WHERE id = $1`, u.ID).Scan(&prefsJSON); err != nil {
-			prefsJSON = string(rawBody)
+			prefsJSON = "{}"
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(prefsJSON)) //nolint
+		var prefs map[string]any
+		if err := json.Unmarshal([]byte(prefsJSON), &prefs); err != nil {
+			prefs = map[string]any{}
+		}
+		if body.DefaultPostVisibility != nil {
+			prefs["default_post_visibility"] = *body.DefaultPostVisibility
+		}
+		if body.Email != nil {
+			prefs["email"] = *body.Email
+		}
+		updated, _ := json.Marshal(prefs)
+		db.Exec(`UPDATE users SET preferences = $1 WHERE id = $2`, string(updated), u.ID) //nolint
+
+		visibility, _ := prefs["default_post_visibility"].(string)
+		if visibility == "" {
+			visibility = "public"
+		}
+		email, _ := prefs["email"].(string)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"settings": map[string]any{
+				"default_post_visibility": visibility,
+				"email":                   email,
+			},
+		})
 	}
 }
 
 // handlePostSettings handles POST /api/users/me/settings per the binding contract.
-// Body: {currentPassword?, newPassword?, email?, preferences?}. Returns {ok: true}.
 func handlePostSettings(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
@@ -116,11 +174,13 @@ func handlePostSettings(db *sql.DB) http.HandlerFunc {
 		if body.Preferences != nil {
 			db.Exec(`UPDATE users SET preferences = $1 WHERE id = $2`, string(body.Preferences), u.ID) //nolint
 		}
-		// Email is accepted but not persisted (no email column in v17 schema).
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }
 
+// handleGetUserProfile handles GET /api/users/{username}.
+// Returns the contract-spec user shape: {user: {id, username, display_name, bio,
+// is_following, is_blocked, post_count, follower_count, following_count}}.
 func handleGetUserProfile(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		username := r.PathValue("username")
@@ -137,10 +197,10 @@ func handleGetUserProfile(db *sql.DB) http.HandlerFunc {
 		// Viewer (may be unauthenticated)
 		viewerID, _ := getSessionUserID(db, r)
 
-		// Follower/following counts
-		var followerCount, followingCount int
+		var followerCount, followingCount, postCount int
 		db.QueryRow(`SELECT COUNT(*) FROM follows WHERE followee_id = $1`, profile.ID).Scan(&followerCount)   //nolint
 		db.QueryRow(`SELECT COUNT(*) FROM follows WHERE follower_id = $1`, profile.ID).Scan(&followingCount) //nolint
+		db.QueryRow(`SELECT COUNT(*) FROM posts WHERE author_id = $1 AND deleted_at IS NULL`, profile.ID).Scan(&postCount) //nolint
 
 		var iFollow, iBlock bool
 		if viewerID != "" && viewerID != profile.ID {
@@ -154,37 +214,38 @@ func handleGetUserProfile(db *sql.DB) http.HandlerFunc {
 		if profilePrivacy == "private" && viewerID != profile.ID && !iFollow {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"user": map[string]any{
-					"username":    profile.Username,
-					"displayName": profile.DisplayName,
-					"bio":         "",
-					"createdAt":   profile.CreatedAt,
-					"isPrivate":   true,
+					"id":              profile.ID,
+					"username":        profile.Username,
+					"display_name":    profile.DisplayName,
+					"bio":             "",
+					"is_following":    iFollow,
+					"is_blocked":      iBlock,
+					"post_count":      0,
+					"follower_count":  followerCount,
+					"following_count": followingCount,
+					"is_private":      true,
 				},
-				"posts":          []Post{},
-				"followerCount":  followerCount,
-				"followingCount": followingCount,
-				"iFollow":        iFollow,
-				"iBlock":         iBlock,
 			})
 			return
 		}
 
-		posts := fetchPostsByAuthor(db, profile.ID, viewerID)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"user":           profile.toUser(),
-			"posts":          posts,
-			"followerCount":  followerCount,
-			"followingCount": followingCount,
-			"iFollow":        iFollow,
-			"iBlock":         iBlock,
+			"user": map[string]any{
+				"id":              profile.ID,
+				"username":        profile.Username,
+				"display_name":    profile.DisplayName,
+				"bio":             profile.Bio,
+				"is_following":    iFollow,
+				"is_blocked":      iBlock,
+				"post_count":      postCount,
+				"follower_count":  followerCount,
+				"following_count": followingCount,
+			},
 		})
 	}
 }
 
 // handleGetUserPosts handles GET /api/users/{username}/posts.
-// Returns {"posts": [...]} with the user's posts, visibility-filtered for the viewer.
-// Public posts are visible to everyone; private posts are visible only to the author
-// and authenticated followers.
 func handleGetUserPosts(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		username := r.PathValue("username")
@@ -198,9 +259,7 @@ func handleGetUserPosts(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Viewer may be unauthenticated
 		viewerID, _ := getSessionUserID(db, r)
-
 		posts := fetchPostsByAuthor(db, profile.ID, viewerID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"posts": posts,
@@ -221,24 +280,29 @@ func handleGetFollowers(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		rows, err := db.Query(`
-			SELECT u.username, u.display_name, u.bio, u.created_at
+			SELECT u.id, u.username, u.display_name, u.bio, u.created_at
 			FROM follows f
 			JOIN users u ON u.id = f.follower_id
 			WHERE f.followee_id = $1
 			ORDER BY f.created_at DESC
 		`, profile.ID)
 		if err != nil {
-			writeJSON(w, http.StatusOK, []User{})
+			writeJSON(w, http.StatusOK, map[string]any{"users": []any{}})
 			return
 		}
 		defer rows.Close()
-		users := []User{}
+		users := []map[string]any{}
 		for rows.Next() {
-			var u User
-			rows.Scan(&u.Username, &u.DisplayName, &u.Bio, &u.CreatedAt) //nolint
-			users = append(users, u)
+			var u DBUser
+			rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Bio, &u.CreatedAt) //nolint
+			users = append(users, map[string]any{
+				"id":           u.ID,
+				"username":     u.Username,
+				"display_name": u.DisplayName,
+				"bio":          u.Bio,
+			})
 		}
-		writeJSON(w, http.StatusOK, users)
+		writeJSON(w, http.StatusOK, map[string]any{"users": users})
 	}
 }
 
@@ -255,23 +319,28 @@ func handleGetFollowing(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		rows, err := db.Query(`
-			SELECT u.username, u.display_name, u.bio, u.created_at
+			SELECT u.id, u.username, u.display_name, u.bio, u.created_at
 			FROM follows f
 			JOIN users u ON u.id = f.followee_id
 			WHERE f.follower_id = $1
 			ORDER BY f.created_at DESC
 		`, profile.ID)
 		if err != nil {
-			writeJSON(w, http.StatusOK, []User{})
+			writeJSON(w, http.StatusOK, map[string]any{"users": []any{}})
 			return
 		}
 		defer rows.Close()
-		users := []User{}
+		users := []map[string]any{}
 		for rows.Next() {
-			var u User
-			rows.Scan(&u.Username, &u.DisplayName, &u.Bio, &u.CreatedAt) //nolint
-			users = append(users, u)
+			var u DBUser
+			rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Bio, &u.CreatedAt) //nolint
+			users = append(users, map[string]any{
+				"id":           u.ID,
+				"username":     u.Username,
+				"display_name": u.DisplayName,
+				"bio":          u.Bio,
+			})
 		}
-		writeJSON(w, http.StatusOK, users)
+		writeJSON(w, http.StatusOK, map[string]any{"users": users})
 	}
 }

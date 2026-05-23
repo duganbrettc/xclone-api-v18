@@ -53,6 +53,10 @@ func main() {
 	mux.HandleFunc("POST /api/users/me/settings", requireAuth(db, handlePostSettings(db)))
 	mux.HandleFunc("POST /api/users/me/password", requireAuth(db, handleChangePasswordAlt(db)))
 
+	// Contract-spec settings routes: GET /api/settings, PATCH /api/settings
+	mux.HandleFunc("GET /api/settings", requireAuth(db, handleGetSettings(db)))
+	mux.HandleFunc("PATCH /api/settings", requireAuth(db, handleUpdateSettings(db)))
+
 	// Public user profile routes
 	mux.HandleFunc("GET /api/users/{username}", handleGetUserProfile(db))
 	mux.HandleFunc("GET /api/users/{username}/posts", handleGetUserPosts(db))

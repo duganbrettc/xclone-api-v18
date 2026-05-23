@@ -63,13 +63,13 @@ func handleSignup(db *sql.DB) http.HandlerFunc {
 			writeJSON(w, http.StatusInternalServerError, errResp("internal", "Could not create session"))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		writeJSON(w, http.StatusCreated, map[string]any{
 			"user": map[string]any{
-				"id":          u.ID,
-				"username":    u.Username,
-				"displayName": u.DisplayName,
-				"bio":         u.Bio,
-				"createdAt":   u.CreatedAt,
+				"id":           u.ID,
+				"username":     u.Username,
+				"display_name": u.DisplayName,
+				"bio":          u.Bio,
+				"created_at":   u.CreatedAt,
 			},
 		})
 	}
@@ -106,11 +106,11 @@ func handleLogin(db *sql.DB) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"user": map[string]any{
-				"id":          u.ID,
-				"username":    u.Username,
-				"displayName": u.DisplayName,
-				"bio":         u.Bio,
-				"createdAt":   u.CreatedAt,
+				"id":           u.ID,
+				"username":     u.Username,
+				"display_name": u.DisplayName,
+				"bio":          u.Bio,
+				"created_at":   u.CreatedAt,
 			},
 		})
 	}
